@@ -201,8 +201,9 @@ def create_app(settings=defaults, vision=None, retriever=None, generator=None):
         if not request.question.strip():
             raise HTTPException(422, "Question cannot be blank.")
         scan = await run_in_threadpool(retrieve, require(scan_id), request.question)
-        # The full conversation remains visible, but only current fields and recent user questions enter generation.
-        history = [m for m in scan.messages if m["role"] == "user"][-4:]
+        # Keep follow-up context within this scan and the current field revision.
+        # Older messages remain visible for audit but cannot reintroduce superseded fields.
+        history = store.context(scan_id)
         if scan.retrieval_warning:
             reply = ChatReply(
                 answer="Reference retrieval unavailable. Install the embedding model and ingest references.",

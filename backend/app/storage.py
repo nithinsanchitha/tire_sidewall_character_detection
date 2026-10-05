@@ -15,11 +15,19 @@ class Store:
             self.db.executescript(
                 """PRAGMA foreign_keys=ON;
             CREATE TABLE IF NOT EXISTS scans(id TEXT PRIMARY KEY, payload TEXT NOT NULL);
-            CREATE TABLE IF NOT EXISTS corrections(id INTEGER PRIMARY KEY, scan_id TEXT REFERENCES scans(id) ON DELETE CASCADE, created_at TEXT, fields TEXT);
+            CREATE TABLE IF NOT EXISTS corrections(id INTEGER PRIMARY KEY, scan_id TEXT REFERENCES scans(id) ON DELETE CASCADE, created_at TEXT, fields TEXT, latest_message_id INTEGER DEFAULT 0);
             CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY, scan_id TEXT REFERENCES scans(id) ON DELETE CASCADE, role TEXT, content TEXT);
             CREATE TABLE IF NOT EXISTS chunks(id TEXT PRIMARY KEY, document TEXT, page INTEGER, text TEXT, source_url TEXT);
             """
             )
+            columns = {r[1] for r in self.db.execute("PRAGMA table_info(corrections)")}
+            if "latest_message_id" not in columns:
+                self.db.execute(
+                    "ALTER TABLE corrections ADD COLUMN latest_message_id INTEGER DEFAULT 0"
+                )
+                self.db.execute(
+                    "UPDATE corrections SET latest_message_id=COALESCE((SELECT MAX(id) FROM messages WHERE messages.scan_id=corrections.scan_id),0)"
+                )
 
     def save(self, scan):
         with self.lock, self.db:
@@ -65,12 +73,35 @@ class Store:
             self.db.execute(
                 "UPDATE scans SET payload=? WHERE id=?", (scan.model_dump_json(), id)
             )
+            latest = self.db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM messages WHERE scan_id=?", (id,)
+            ).fetchone()[0]
             self.db.execute(
-                "INSERT INTO corrections(scan_id,created_at,fields) VALUES (?,?,?)",
-                (id, datetime.now(timezone.utc).isoformat(), fields.model_dump_json()),
+                "INSERT INTO corrections(scan_id,created_at,fields,latest_message_id) VALUES (?,?,?,?)",
+                (
+                    id,
+                    datetime.now(timezone.utc).isoformat(),
+                    fields.model_dump_json(),
+                    latest,
+                ),
             )
             # Old chat used superseded fields; retain it in DB but exclude it from generation context.
             return scan
+
+    def context(self, id):
+        """Recent conversation for this scan's current corrected-field revision."""
+        with self.lock:
+            floor = self.db.execute(
+                "SELECT COALESCE(MAX(latest_message_id),0) FROM corrections WHERE scan_id=?",
+                (id,),
+            ).fetchone()[0]
+            return [
+                dict(r)
+                for r in self.db.execute(
+                    "SELECT role,content FROM (SELECT id,role,content FROM messages WHERE scan_id=? AND id>? ORDER BY id DESC LIMIT 8) ORDER BY id",
+                    (id, floor),
+                )
+            ]
 
     def message(self, id, role, content):
         with self.lock, self.db:

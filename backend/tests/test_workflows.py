@@ -271,3 +271,22 @@ def test_txt_pdf_ingestion_real_faiss(tmp_path):
     with pytest.raises(ValueError):
         r.ingest(b"", "blank.txt", "text/plain")
     store.db.close()
+
+
+def test_followup_context_resets_after_correction(client):
+    scan = upload(client).json()
+    id = scan["id"]
+    client.post(
+        f"/api/scans/{id}/chat", json={"question": "Explain radial construction"}
+    )
+    store = client.app.state.store
+    assert [m["role"] for m in store.context(id)] == ["user", "assistant"]
+    other = upload(client).json()["id"]
+    assert store.context(other) == []
+    client.patch(f"/api/scans/{id}", json=scan["fields"] | {"brand": "TOYO"})
+    assert store.context(id) == []
+    assert len(client.get(f"/api/scans/{id}").json()["messages"]) == 2
+    client.post(
+        f"/api/scans/{id}/chat", json={"question": "Explain the corrected brand"}
+    )
+    assert store.context(id)[0]["content"] == "Explain the corrected brand"
