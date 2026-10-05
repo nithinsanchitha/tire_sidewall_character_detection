@@ -1,5 +1,7 @@
 from pathlib import Path
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     data_dir: Path = Path("data")
@@ -20,4 +22,6 @@ class Settings(BaseSettings):
     external_api_key: str = ""
     llm_timeout: float = 90
     retrieval_min_score: float = 0.22
+
+
 settings = Settings()
